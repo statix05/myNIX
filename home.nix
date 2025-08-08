@@ -5,20 +5,15 @@
   home.homeDirectory = "/home/statix";
   home.stateVersion = "24.11";
 
-  # Пакеты пользователя (граф. стек)
   home.packages = with pkgs; [
-    # WM stack
     bspwm
     sxhkd
     polybar
-    picom-pijulius
-
-    # Utils
+    (pkgs.picom-pijulius or pkgs.picom) # fallback, если pijulius недоступен в канале
     rofi
     feh
   ];
 
-  # Zsh + плагины + Starship
   programs.starship.enable = true;
 
   programs.zsh = {
@@ -27,24 +22,20 @@
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     enableCompletion = true;
-
     oh-my-zsh = {
       enable = true;
       theme = "robbyrussell";
       plugins = [ "git" "fzf" "sudo" ];
     };
-
     initExtra = ''
       bindkey -e
       export EDITOR="nvim"
       export LANG=ru_RU.UTF-8
       export LC_ALL=ru_RU.UTF-8
       eval "$(starship init zsh)"
-      # fzf улучшения
       [ -f ${pkgs.fzf}/share/fzf/key-bindings.zsh ] && source ${pkgs.fzf}/share/fzf/key-bindings.zsh
       [ -f ${pkgs.fzf}/share/fzf/completion.zsh ] && source ${pkgs.fzf}/share/fzf/completion.zsh
     '';
-
     shellAliases = {
       ll = "ls -lah";
       gs = "git status";
@@ -56,7 +47,6 @@
     };
   };
 
-  # Alacritty
   programs.alacritty = {
     enable = true;
     settings = {
@@ -70,7 +60,6 @@
     };
   };
 
-  # Xresources для HiDPI (подстрой при необходимости)
   xresources.properties = {
     "Xft.dpi" = 144;
     "Xft.antialias" = 1;
@@ -79,16 +68,9 @@
     "Xft.rgba" = "rgb";
   };
 
-  # Конфиг BSPWM/sxhkd/Polybar/Picom
   xdg.configFile."bspwm/bspwmrc".text = ''
     #!/usr/bin/env sh
-
-    pgidfile="/tmp/bspwm-polybar-picom.pid"
-
-    # рабочие столы
-    bspc monitor -d 1 2 3 4
-
-    # правила
+    bspc monitor -d 1 2 3 4 5 6 7 8 9
     bspc config border_width         2
     bspc config window_gap           8
     bspc config split_ratio          0.52
@@ -96,10 +78,8 @@
     bspc config gapless_monocle      true
     bspc config focus_follows_pointer true
 
-    # старт сервисов
     pgrep -x sxhkd >/dev/null || sxhkd &
     pgrep -x picom >/dev/null || picom --experimental-backends &
-    # polybar
     if command -v polybar >/dev/null; then
       killall -q polybar
       while pgrep -x polybar >/dev/null; do sleep 0.2; done
@@ -109,32 +89,20 @@
   xdg.configFile."bspwm/bspwmrc".mode = "0755";
 
   xdg.configFile."sxhkd/sxhkdrc".text = ''
-    # запуск терминала
     super + Return
       alacritty
-
-    # перезапуск bspwm
     super + Shift + r
       bspc wm -r
-
-    # закрыть окно
     super + q
       bspc node -c
-
-    # переключение фокуса
     super + {h,j,k,l}
       bspc node -f {west,south,north,east}
-
-    # перемещение окна
     super + shift + {h,j,k,l}
       bspc node -s {west,south,north,east}
-
-    # рабочие столы 1..4
-    super + {1-4}
-      bspc desktop -f {1-4}
-
-    super + shift + {1-4}
-      bspc node -d {1-4}
+    super + {1-9}
+      bspc desktop -f {1-9}
+    super + shift + {1-9}
+      bspc node -d {1-9}
   '';
 
   xdg.configFile."polybar/config.ini".text = ''
@@ -145,11 +113,9 @@
     background = #AA1E1E2E
     foreground = #ECEFF4
     font-0 = JetBrainsMono Nerd Font:style=Regular:size=10;3
-
     modules-left = bspwm
     modules-center =
     modules-right = date
-
     tray-position = right
 
     [module/bspwm]
@@ -161,7 +127,6 @@
     date = %Y-%m-%d %H:%M:%S
   '';
 
-  # Picom (pijulius)
   xdg.configFile."picom/picom.conf".text = ''
     backend = "glx";
     vsync = true;
@@ -176,15 +141,12 @@
     fading = true;
     fade-in-step = 0.03;
     fade-out-step = 0.03;
-    opacity-rule = [
-      "90:class_g *= 'Alacritty'"
-    ];
+    opacity-rule = [ "90:class_g *= 'Alacritty'" ];
   '';
 
-  # AstroNvim: берём исходники из flake input и подсовываем как ~/.config/nvim
+  # AstroNvim из input
   xdg.configFile."nvim".source = astronvim;
 
-  # Простейший user-конфиг AstroNvim (опционально)
   xdg.configFile."nvim/lua/user/init.lua".text = ''
     return {
       colorscheme = "habamax",
