@@ -5,7 +5,11 @@
     ./hardware-configuration.nix
   ];
 
-  # Хост/локаль/время
+  # Загрузчик
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;
+
+  # Хост/локали/время
   networking.hostName = "svetos";
   time.timeZone = "Europe/Moscow";
 
@@ -18,9 +22,9 @@
   # X11 + SDDM + BSPWM
   services.xserver = {
     enable = true;
+    videoDrivers = [ "nvidia" ];
     xkb = {
       layout = "us,ru";
-      # второй раскладке (ru) задаём вариант "pc"
       variant = ",pc";
       options = "grp:ctrl_space_toggle,altwin:swap_alt_win";
     };
@@ -31,7 +35,7 @@
     libinput.enable = true;
   };
 
-  # Аудио (PipeWire)
+  # Аудио
   security.rtkit.enable = true;
   services.pipewire = {
     enable = true;
@@ -46,35 +50,26 @@
   services.blueman.enable = true;
 
   # NVIDIA + CUDA
-  hardware.graphics.enable = true;        # GL, VA-API базово
+  hardware.graphics.enable = true;
   hardware.nvidia = {
     modesetting.enable = true;
     nvidiaSettings = true;
     open = false; # проприетарный драйвер
     package = config.boot.kernelPackages.nvidiaPackages.production;
     powerManagement.enable = true;
-    # PRIME не настраиваю специально: предполагаю мониторы на dGPU.
   };
   hardware.nvidia.cudaSupport = true;
 
-  # Видео-ускорение для NVIDIA через VA-API
-  environment.systemPackages = with pkgs; [
-    nvidia-vaapi-driver
-  ];
-
-  # NetworkManager с iwd
+  # Сеть
   networking = {
     networkmanager = {
       enable = true;
       wifi.backend = "iwd";
     };
-    # избегаем конфликтов
     useDHCP = false;
     dhcpcd.enable = false;
     firewall.enable = true;
     firewall.allowPing = true;
-    # SSH
-    hostName = "svetos";
   };
 
   services.openssh = {
@@ -106,8 +101,8 @@
     extraGroups = [ "wheel" "video" "audio" "networkmanager" "input" ];
     shell = pkgs.zsh;
   };
-  programs.zsh.enable = true;
   users.defaultUserShell = pkgs.zsh;
+  programs.zsh.enable = true;
   security.sudo.enable = true;
 
   # Автообновления и GC
@@ -130,41 +125,27 @@
     };
   };
 
-  # Пакеты системы (минимум, остальное — в home)
+  # Пакеты системы
   environment.systemPackages = with pkgs; [
     sudo
     git
     btrfs-progs
-    mdadm             # на всякий случай, для диагностики RAID (мы используем btrfs-raid0)
+    mdadm
     iwd
     dhcpcd
     alacritty
     google-chrome
-    gcc
-    gnumake
-    cmake
-    pkg-config
-    unzip
-    zip
-    curl
-    wget
-    htop
-    pciutils
-    usbutils
-    fwupd
+    gcc gnumake cmake pkg-config binutils autoconf automake libtool patch which
+    unzip zip curl wget htop pciutils usbutils fwupd
+    nvidia-vaapi-driver
   ];
 
-  programs.firefox.enable = false; # Используем Chrome
   services.fwupd.enable = true;
 
-  # Swap: 32ГБ swapfile на btrfs (создастся автоматически с NOCOW)
+  # Swap: 32 ГБ swapfile на btrfs (создастся автоматически с NOCOW)
   swapDevices = [
     { device = "/swap/swapfile"; size = 32 * 1024; }
   ];
 
-  # HiDPI (общесистемно в X11 это не трогаем, см. Xresources в home)
-  # Можно будет тонко подстроить dpi/scale при желании.
-
-  # Unfree/канал уже включены в flake через pkgs.config.allowUnfree
   system.stateVersion = "24.11";
 }
