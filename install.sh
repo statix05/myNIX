@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Константы
+# КОНСТАНТЫ
 NVME="/dev/nvme0n1"
 EFI_PART="${NVME}p1"
 LUKS_PART="${NVME}p2"
@@ -14,28 +14,134 @@ DATA_A_PART="/dev/disk/by-partlabel/data-a"
 DATA_B_PART="/dev/disk/by-partlabel/data-b"
 
 ask() {
-  read -r -p "$1 [y/N]: " ans
+  read -r -p "$1 [y/N]: " ans || true
   [[ "${ans:-}" == "y" || "${ans:-}" == "Y" ]]
 }
 
 echo "ВНИМАНИЕ: будут УДАЛЕНЫ ВСЕ ДАННЫЕ на: ${NVME}, ${DATA_A}, ${DATA_B}"
 ask "Продолжить?" || exit 1
 
-echo "Устанавливаем нужные инструменты..."
+echo "Проверка окружения..."
 if ! command -v nixos-generate-config >/dev/null 2>&1; then
-  echo "Скрипт должен выполняться из Live-ISO NixOS. Прерывание."
+  echo "Этот скрипт нужно запускать из Live-ISO NixOS."
   exit 1
 fi
 
+# Универсальная функция «полного» затирания метаданных и разделов
+nuke_device() {
+  local dev="$1"
+  echo ">>> Подготовка к затиранию: $dev"
+
+  # Собираем список самого диска и его разделов
+  mapfile -t nodes < <(lsblk -lnpo NAME "$dev" 2>/dev/null || true)
+  if ((${#nodes[@]} == 0)); then
+    nodes=("$dev")
+  fi
+
+  # Снимаем монтирования
+  for n in "${nodes[@]}"; do
+    while read -r mp; do
+      [[ -n "$mp" ]] || continue
+      echo "  - umount $mp"
+      umount -R "$mp" 2>/dev/null || true
+    done < <(lsblk -lnpo MOUNTPOINT "$n" 2>/dev/null | awk 'NF>0')
+  done
+
+  # Отключаем свап на этих устройствах
+  while read -r swdev _; do
+    [[ -n "${swdev:-}" ]] || continue
+    if [[ "$swdev" == "$dev"* ]]; then
+      echo "  - swapoff $swdev"
+      swapoff "$swdev" 2>/dev/null || true
+    fi
+  done < <(grep -E "^(/dev/|/dev/mapper/)" /proc/swaps || true)
+
+  # Закрываем любые открытые dm-crypt (LUKS)
+  if command -v cryptsetup >/dev/null 2>&1; then
+    for m in /dev/mapper/*; do
+      [[ -e "$m" ]] || continue
+      if cryptsetup status "$m" >/dev/null 2>&1; then
+        echo "  - cryptsetup close $m"
+        cryptsetup close "$m" 2>/dev/null || true
+      fi
+    done
+  fi
+
+  # Останавливаем mdadm-массивы и затираем superblock
+  if command -v mdadm >/dev/null 2>&1; then
+    mdadm --stop --scan 2>/dev/null || true
+    for n in "${nodes[@]}" "$dev"; do
+      echo "  - mdadm --zero-superblock $n"
+      mdadm --zero-superblock --force "$n" 2>/dev/null || true
+    done
+  fi
+
+  # Деактивируем LVM и убираем PV-сигнатуры
+  if command -v vgchange >/dev/null 2>&1; then
+    vgchange -an 2>/dev/null || true
+  fi
+  if command -v pvremove >/dev/null 2>&1; then
+    for n in "${nodes[@]}" "$dev"; do
+      pvremove -ff -y "$n" 2>/dev/null || true
+    done
+  fi
+
+  # Wipe FS сигнатуры на разделах и самом диске
+  for n in "${nodes[@]}" "$dev"; do
+    wipefs -af "$n" 2>/dev/null || true
+  done
+
+  # ZAP GPT/MBR
+  if command -v sgdisk >/dev/null 2>&1; then
+    sgdisk --zap-all "$dev" 2>/dev/null || true
+  fi
+
+  # Быстрый TRIM (если поддерживается)
+  if command -v blkdiscard >/dev/null 2>&1; then
+    blkdiscard -f "$dev" 2>/dev/null || true
+  fi
+
+  # Нулим первые и последние 16MiB диска (для верности)
+  local size_mb
+  size_mb=$(($(blockdev --getsize64 "$dev" 2>/dev/null || echo 0)/1024/1024))
+  if (( size_mb > 32 )); then
+    echo "  - zero first/last 16MiB on $dev"
+    dd if=/dev/zero of="$dev" bs=1M count=16 oflag=direct,dsync status=none 2>/dev/null || true
+    dd if=/dev/zero of="$dev" bs=1M count=16 seek=$((size_mb-16)) oflag=direct,dsync status=none 2>/dev/null || true
+  else
+    dd if=/dev/zero of="$dev" bs=1M count=16 oflag=direct,dsync status=none 2>/dev/null || true
+  fi
+
+  udevadm settle
+  echo "<<< Готово: $dev"
+}
+
+# Предварительная общая зачистка (если скрипт запускают повторно)
+swapoff -a || true
+umount -R /mnt 2>/dev/null || true
+if command -v mdadm >/dev/null 2>&1; then mdadm --stop --scan 2>/dev/null || true; fi
+if command -v cryptsetup >/dev/null 2>&1; then
+  for m in /dev/mapper/*; do
+    [[ -e "$m" ]] || continue
+    cryptsetup status "$m" >/dev/null 2>&1 && cryptsetup close "$m" 2>/dev/null || true
+  done
+fi
+if command -v vgchange >/dev/null 2>&1; then vgchange -an 2>/dev/null || true; fi
+
+# ПОЛНОЕ ЗАТИРАНИЕ ТРЁХ НОСИТЕЛЕЙ
+nuke_device "$NVME"
+nuke_device "$DATA_A"
+nuke_device "$DATA_B"
+
 # 1) Разметка nvme0n1: EFI + LUKS
 echo "Разметка ${NVME}..."
-sgdisk --zap-all "${NVME}"
 parted -s "${NVME}" mklabel gpt
 parted -s "${NVME}" mkpart EFI fat32 1MiB 513MiB
 parted -s "${NVME}" set 1 esp on
 parted -s "${NVME}" name 1 EFI
 parted -s "${NVME}" mkpart nixos-root 513MiB 100%
 parted -s "${NVME}" name 2 nixos-root
+udevadm settle
 
 echo "Шифрование LUKS и файловая система..."
 cryptsetup luksFormat --type luks2 -q "${LUKS_PART}"
@@ -67,9 +173,6 @@ mount "${EFI_PART}" /mnt/boot
 
 # 3) Разметка дисков под /home: Btrfs RAID0 (без шифрования)
 echo "Разметка ${DATA_A} и ${DATA_B} под Btrfs RAID0..."
-sgdisk --zap-all "${DATA_A}" || true
-sgdisk --zap-all "${DATA_B}" || true
-
 parted -s "${DATA_A}" mklabel gpt
 parted -s "${DATA_A}" mkpart data 1MiB 100%
 parted -s "${DATA_A}" name 1 data-a
@@ -77,8 +180,6 @@ parted -s "${DATA_A}" name 1 data-a
 parted -s "${DATA_B}" mklabel gpt
 parted -s "${DATA_B}" mkpart data 1MiB 100%
 parted -s "${DATA_B}" name 1 data-b
-
-# Ждём появления by-partlabel
 udevadm settle
 
 mkfs.btrfs -L data -d raid0 -m raid0 "${DATA_A_PART}" "${DATA_B_PART}"
@@ -128,6 +229,6 @@ echo "Теперь ${USER}:"
 chroot /mnt /bin/sh -c "passwd ${USER}"
 
 echo "Готово. Отмонтируем и перезагружаем."
-umount -R /mnt
+umount -R /mnt || true
 swapoff -a || true
 reboot
