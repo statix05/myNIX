@@ -177,16 +177,38 @@ parted -s "${DATA_B}" mkpart data 1MiB 100%
 parted -s "${DATA_B}" name 1 data-b
 udevadm settle
 
+echo "Создаём Btrfs (RAID0) c меткой data..."
 mkfs.btrfs -L data -d raid0 -m raid0 "${DATA_A_PART}" "${DATA_B_PART}"
 
+# Убедимся, что ядро «видит» многодисковый Btrfs и появились /dev/disk/by-*
+modprobe btrfs || true
+btrfs device scan --all-devices || true
+udevadm trigger --subsystem-match=block --action=add || true
+udevadm settle
+
+# Ждём /dev/disk/by-label/data до 5с, иначе fallback на один из членов массива
+DATA_FS_DEV=""
+for i in {1..50}; do
+  if [[ -e /dev/disk/by-label/data ]]; then
+    DATA_FS_DEV="/dev/disk/by-label/data"
+    break
+  fi
+  sleep 0.1
+done
+if [[ -z "${DATA_FS_DEV}" ]]; then
+  echo "Предупреждение: /dev/disk/by-label/data не появился, используем ${DATA_A_PART}"
+  DATA_FS_DEV="${DATA_A_PART}"
+fi
+
+# Создаём субтом @home и монтируем его
 mkdir -p /mnt/hdtemp
-mount /dev/disk/by-label/data /mnt/hdtemp
+mount -t btrfs "${DATA_FS_DEV}" /mnt/hdtemp
 btrfs subvolume create /mnt/hdtemp/@home
 umount /mnt/hdtemp
 rmdir /mnt/hdtemp
 
 mkdir -p /mnt/home
-mount -o subvol=@home,compress=zstd,noatime,ssd,space_cache=v2 /dev/disk/by-label/data /mnt/home
+mount -t btrfs -o subvol=@home,compress=zstd,noatime,ssd,space_cache=v2 "${DATA_FS_DEV}" /mnt/home
 
 # 3) Копируем конфиги из репозитория
 mkdir -p /mnt/etc/nixos
